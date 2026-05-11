@@ -1,70 +1,95 @@
 import pandas as pd
 from dbfread import DBF
 import os
+from pyproj import Transformer
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+from tqdm import tqdm  # 진행바 표시용: pip install tqdm
 
-# 1. 파일들이 있는 폴더 경로 설정
-folder_path = 'imdoData/Data'  # 실제 파일이 있는 폴더명으로 수정하세요
-
-# 2. 통합할 리스트 준비
+# 1. 파일 통합 설정
+folder_path = 'imdoData/Data' 
 all_data = []
 
-# 3. 폴더 내 모든 dbf 파일 순회
+# 2. DBF 파일 순회 및 통합
+print("데이터 불러오기 시작...")
 for file_name in os.listdir(folder_path):
     if file_name.endswith('.dbf'):
         file_path = os.path.join(folder_path, file_name)
-        
         try:
-            # dbf 파일 읽기 (한글 깨짐 방지를 위해 cp949 인코딩 사용)
             table = DBF(file_path, encoding='cp949')
             df = pd.DataFrame(iter(table))
-            
-            # 어느 지역 데이터인지 구분하기 위해 파일명 컬럼 추가
-            df['SOURCE_FILE'] = file_name
-            
+            df['SOURCE_FILE'] = file_name # 원본 파일명 저장
             all_data.append(df)
-            print(f"성공: {file_name} (행 개수: {len(df)})")
-            
         except Exception as e:
             print(f"오류 발생 ({file_name}): {e}")
 
-# 4. 모든 데이터 하나로 합치기
-if all_data:
-    final_df = pd.concat(all_data, ignore_index=True)
-    print("--- 통합 완료 ---")
-    print(f"전체 데이터 행 개수: {len(final_df)}")
-else:
-    print("불러올 DBF 파일이 없습니다.")
+if not all_data:
+    print("불러올 데이터가 없습니다. 경로를 확인하세요.")
+    exit()
 
-# 5. 데이터 샘플 확인
-print(final_df[['SOURCE_FILE', 'FRRD_NM', 'FRRD_FCLTD', 'FRRD_ESTBL']].head())
+final_df = pd.concat(all_data, ignore_index=True)
+print(f"통합 완료: 총 {len(final_df)}행")
 
-import matplotlib.pyplot as plt
-import seaborn as sns
+# 3. 좌표 변환 (TM중부 5179 -> 위경도 4326)
+transformer = Transformer.from_crs("EPSG:5179", "EPSG:4326", always_xy=True)
 
-# 한글 깨짐 방지 설정 (Windows 기준)
-plt.rcParams['font.family'] = 'Malgun Gothic'
-plt.rcParams['axes.unicode_minus'] = False
+def convert_to_wgs84(row):
+    try:
+        lon, lat = transformer.transform(row['RBP_X'], row['RBP_Y'])
+        return pd.Series([lat, lon])
+    except:
+        return pd.Series([None, None])
 
-# 1. 연도별 임도 개설 총 거리 계산
-# FRRD_ESTBL이 문자열일 수 있으니 숫자로 변환 후 정렬
-final_df['FRRD_ESTBL'] = pd.to_numeric(final_df['FRRD_ESTBL'], errors='coerce')
-yearly_dist = final_df.groupby('FRRD_ESTBL')['FRRD_FCLTD'].sum().reset_index()
+print("좌표 변환 중...")
+final_df[['LAT', 'LON']] = final_df.apply(convert_to_wgs84, axis=1)
 
-# 2. 지역별(파일별) 총 임도 거리 계산
-region_dist = final_df.groupby('SOURCE_FILE')['FRRD_FCLTD'].sum().sort_values(ascending=False).reset_index()
+# 4. 데이터 정제 및 칼럼명 한글화
+final_df['SOURCE_FILE'] = final_df['SOURCE_FILE'].str.replace('.dbf', '', regex=False)
 
+column_names = {
+    'SOURCE_FILE': '지역',
+    'FRRD_NM': '임도명',
+    'FRRD_FCLTD': '시설거리(km)',
+    'FRRD_ESTBL': '개설연도',
+    'LAT': '위도',
+    'LON': '경도'
+}
+final_df = final_df.rename(columns=column_names)
 
-plt.figure(figsize=(12, 6))
-sns.lineplot(data=yearly_dist[yearly_dist['FRRD_ESTBL'] > 1990], x='FRRD_ESTBL', y='FRRD_FCLTD', marker='o', color='forestgreen')
-plt.title('연도별 신규 임도 개설 거리 추이 (1990년 이후)')
-plt.xlabel('개설 연도')
-plt.ylabel('총 거리 (km)')
-plt.grid(True, linestyle='--', alpha=0.6)
-plt.show()
+# 데이터 타입 정리
+final_df['개설연도'] = pd.to_numeric(final_df['개설연도'], errors='coerce').fillna(0).astype(int)
+final_df['시설거리(km)'] = pd.to_numeric(final_df['시설거리(km)'], errors='coerce')
 
-plt.figure(figsize=(12, 6))
-sns.barplot(data=region_dist, x='SOURCE_FILE', y='FRRD_FCLTD', palette='viridis')
-plt.title('지역별(파일명) 임도 확보 총 거리 비교')
-plt.xticks(rotation=45)
-plt.ylabel('총 거리 (km)')
-plt.show()
+# 5. 주소 변환 (역지오코딩) - 읍/면 추출 중심
+print("주소 변환을 시작합니다. (약 1시간 소요 예정)")
+
+geolocator = Nominatim(user_agent="south_korea_forest_fire_project_v2")
+# 1초 간격으로 요청하도록 설정 (OpenStreetMap 정책 준수)
+reverse = RateLimiter(geolocator.reverse, min_delay_seconds=1.1)
+
+# 진행 상황 확인을 위해 tqdm 적용
+tqdm.pandas()
+
+def get_detailed_addr(lat, lon):
+    try:
+        location = reverse((lat, lon), language='ko')
+        if location:
+            addr = location.raw.get('address', {})
+            # 읍/면 정보를 우선적으로 추출
+            town = addr.get('town', addr.get('village', addr.get('suburb', addr.get('neighbourhood', ''))))
+            full_addr = location.address
+            return pd.Series([full_addr, town])
+    except:
+        return pd.Series([None, None])
+
+# 실제 변환 수행 (LAT, LON -> 상세주소, 읍면동)
+final_df[['상세주소', '읍면동']] = final_df.progress_apply(
+    lambda row: get_detailed_addr(row['위도'], row['경도']), axis=1
+)
+
+# 6. 최종 CSV 저장
+output_file = '전국_임도망_상세주소_통합본.csv'
+final_df.to_csv(output_file, index=False, encoding='utf-8-sig')
+
+print(f"\n--- 모든 작업 완료 ---")
+print(f"최종 저장된 파일: {output_file}")
