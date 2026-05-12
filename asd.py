@@ -110,3 +110,4 @@ print(df2.isnull().sum())
 
 
 print(df.info())
+
