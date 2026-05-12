@@ -1,95 +1,23 @@
-import pandas as pd
-from dbfread import DBF
-import os
-from pyproj import Transformer
-from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
-from tqdm import tqdm  # 진행바 표시용: pip install tqdm
+# # [핵심 1] 좌표계 변환 및 한글 칼럼화
+# # TM중부(5179) 좌표를 위경도(4326)로 변환하여 범용성 확보
+# transformer = Transformer.from_crs("EPSG:5179", "EPSG:4326", always_xy=True)
+# final_df[['위도', '경도']] = final_df.apply(
+#     lambda r: pd.Series(transformer.transform(r['RBP_X'], r['RBP_Y'])[::-1]), axis=1
+# )
 
-# 1. 파일 통합 설정
-folder_path = 'imdoData/Data' 
-all_data = []
+# # [핵심 2] 역지오코딩을 통한 파생 변수(읍면동) 생성
+# # 산불 데이터와의 결합을 위해 좌표를 행정구역 텍스트로 변환
+# def get_detailed_addr(lat, lon):
+#     location = reverse((lat, lon), language='ko')
+#     if location:
+#         addr = location.raw.get('address', {})
+#         # 읍/면/동 정보를 우선적으로 추출하여 결합 키 생성
+#         town = addr.get('town', addr.get('village', addr.get('suburb', '')))
+#         return pd.Series([location.address, town])
 
-# 2. DBF 파일 순회 및 통합
-print("데이터 불러오기 시작...")
-for file_name in os.listdir(folder_path):
-    if file_name.endswith('.dbf'):
-        file_path = os.path.join(folder_path, file_name)
-        try:
-            table = DBF(file_path, encoding='cp949')
-            df = pd.DataFrame(iter(table))
-            df['SOURCE_FILE'] = file_name # 원본 파일명 저장
-            all_data.append(df)
-        except Exception as e:
-            print(f"오류 발생 ({file_name}): {e}")
-
-if not all_data:
-    print("불러올 데이터가 없습니다. 경로를 확인하세요.")
-    exit()
-
-final_df = pd.concat(all_data, ignore_index=True)
-print(f"통합 완료: 총 {len(final_df)}행")
-
-# 3. 좌표 변환 (TM중부 5179 -> 위경도 4326)
-transformer = Transformer.from_crs("EPSG:5179", "EPSG:4326", always_xy=True)
-
-def convert_to_wgs84(row):
-    try:
-        lon, lat = transformer.transform(row['RBP_X'], row['RBP_Y'])
-        return pd.Series([lat, lon])
-    except:
-        return pd.Series([None, None])
-
-print("좌표 변환 중...")
-final_df[['LAT', 'LON']] = final_df.apply(convert_to_wgs84, axis=1)
-
-# 4. 데이터 정제 및 칼럼명 한글화
-final_df['SOURCE_FILE'] = final_df['SOURCE_FILE'].str.replace('.dbf', '', regex=False)
-
-column_names = {
-    'SOURCE_FILE': '지역',
-    'FRRD_NM': '임도명',
-    'FRRD_FCLTD': '시설거리(km)',
-    'FRRD_ESTBL': '개설연도',
-    'LAT': '위도',
-    'LON': '경도'
-}
-final_df = final_df.rename(columns=column_names)
-
-# 데이터 타입 정리
-final_df['개설연도'] = pd.to_numeric(final_df['개설연도'], errors='coerce').fillna(0).astype(int)
-final_df['시설거리(km)'] = pd.to_numeric(final_df['시설거리(km)'], errors='coerce')
-
-# 5. 주소 변환 (역지오코딩) - 읍/면 추출 중심
-print("주소 변환을 시작합니다. (약 1시간 소요 예정)")
-
-geolocator = Nominatim(user_agent="south_korea_forest_fire_project_v2")
-# 1초 간격으로 요청하도록 설정 (OpenStreetMap 정책 준수)
-reverse = RateLimiter(geolocator.reverse, min_delay_seconds=1.1)
-
-# 진행 상황 확인을 위해 tqdm 적용
-tqdm.pandas()
-
-def get_detailed_addr(lat, lon):
-    try:
-        location = reverse((lat, lon), language='ko')
-        if location:
-            addr = location.raw.get('address', {})
-            # 읍/면 정보를 우선적으로 추출
-            town = addr.get('town', addr.get('village', addr.get('suburb', addr.get('neighbourhood', ''))))
-            full_addr = location.address
-            return pd.Series([full_addr, town])
-    except:
-        return pd.Series([None, None])
-
-# 실제 변환 수행 (LAT, LON -> 상세주소, 읍면동)
-final_df[['상세주소', '읍면동']] = final_df.progress_apply(
-    lambda row: get_detailed_addr(row['위도'], row['경도']), axis=1
-)
-
-# 6. 최종 CSV 저장
-output_file = '전국_임도망_상세주소_통합본.csv'
-final_df.to_csv(output_file, index=False, encoding='utf-8-sig')
-
-print(f"\n--- 모든 작업 완료 ---")
-print(f"최종 저장된 파일: {output_file}")
+# # [핵심 3] 데이터 최적화 및 상수 컬럼 삭제
+# # 분석에 필요한 핵심 컬럼만 선택하고 변별력 없는 데이터 자동 제거
+# columns_to_keep = ['지역', '시설거리(km)', '개설연도', '위도', '경도', '상세주소', '읍면동']
+# final_df = final_df[columns_to_keep]
+# # 값이 1종류뿐인 불필요한 컬럼 자동 삭제
+# final_df = final_df.drop(final_df.nunique()[final_df.nunique() <= 1].index, axis=1)
