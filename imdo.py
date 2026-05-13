@@ -39,6 +39,22 @@ df_imdo = pd.read_csv('imdoData/Data/전국_임도망_정제본.csv',encoding='u
 df_imdo.info()
 
 df_fire['시군구_clean'] = df_fire['시군구'].str.replace(r'(시|군|구)$', '', regex=True).str.strip()
+
+# 3. 기상 조건 구간화 (유사 기상 그룹 만들기)
+df_fire['기온구간'] = pd.cut(df_fire['평균기온(°C)'], 
+                          bins=[-float('inf'), 10, 25, float('inf')], 
+                          labels=['저온', '보통기온', '고온'])
+
+df_fire['풍속구간'] = pd.cut(df_fire['평균 풍속(m/s)'], 
+                          bins=[-float('inf'), 2, 5, float('inf')], 
+                          labels=['약풍', '보통풍', '강풍'])
+
+def get_precip_cat(x):
+    if x <= 0: return '무강수'
+    elif x <= 5: return '적은강수'
+    else: return '많은강수'
+df_fire['강수구간'] = df_fire['일강수량(mm)'].apply(get_precip_cat)
+
 def extract_sigungu(addr):
     if pd.isna(addr): return ""
     parts = str(addr).split(',')
@@ -59,10 +75,13 @@ def get_road_length_at_time(fire_row):
     return target_roads['시설거리(km)'].sum()
 
 # 4. 대형 산불 데이터만 추출하여 분석 진행 (피해면적 1ha 이상)
-df_big_fire = df_fire[df_fire['피해면적'] >= 0].copy()
+df_big_fire = df_fire[df_fire['피해면적'] >= 10].copy()
 
 # 각 대형 산불 행에 대해 당시 임도 길이 계산하여 추가
 df_big_fire['당시_임도길이'] = df_big_fire.apply(get_road_length_at_time, axis=1)
+
+# 임도 보유 수준을 3등급으로 나눔 (하/중/상)
+df_fire['임도수준'] = pd.qcut(df_fire['당시_임도길이'].rank(method='first'), 3, labels=['하(부족)', '중(보통)', '상(풍부)'])
 
 # 5. 결과 확인
 print("--- 대형 산불 당시 지역별 임도 보유 현황 ---")
@@ -91,4 +110,28 @@ plt.title('산불 당시 임도 보유량과 진화 시간의 관계')
 plt.xlabel('산불 당시 해당 지역 임도 총 길이 (km)')
 plt.ylabel('진화 시간 (분)')
 plt.grid(True)
+plt.show()
+
+
+df_sub = df_fire[(df_fire['기온구간'] == '보통기온') & (df_fire['강수구간'] == '무강수')]
+
+plt.rcParams['font.family'] = 'Malgun Gothic' # 한글 폰트
+plt.figure(figsize=(12, 7))
+
+# 풍속별로 임도 수준이 진화 시간에 미치는 영향 시각화
+sns.barplot(data=df_sub, x='풍속구간', y='진화시간_분', hue='임도수준', palette='viridis', ci=None)
+
+plt.title('유사 기상 조건(보통기온, 무강수) 내 임도 수준별 평균 진화 시간')
+plt.ylabel('평균 진화 시간 (분)')
+plt.xlabel('풍속 구간')
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.legend(title='임도 보유 수준')
+
+# 막대 위에 숫자 표시
+ax = plt.gca()
+for p in ax.patches:
+    ax.annotate(f'{int(p.get_height())}', (p.get_x() + p.get_width() / 2., p.get_height()),
+                ha='center', va='center', xytext=(0, 10), textcoords='offset points')
+
+plt.tight_layout()
 plt.show()
