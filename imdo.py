@@ -42,16 +42,18 @@ fire_counts = [df_fire[df_fire['발생연도'] == y]['발생연도'].count() for
 bigfire_counts = [df_fire[(df_fire['발생연도'] == y) & (df_fire['대형산불'] == True)]['발생연도'].count() for y in years]
 
 x = np.arange(len(years)) 
-plt.figure(figsize=(10, 5))
+plt.figure(figsize=(5, 5))
 plt.bar(x - 0.2, fire_counts, width=0.4, label='전체 산불 횟수', color='blue')
 plt.bar(x + 0.2, bigfire_counts, width=0.4, label='1ha이상 산불 횟수', color='red')
 plt.title('연도별 화재 횟수 대비 1ha 이상 피해면적 산불 횟수')
-plt.xticks(x, [f'{y}년' for y in years])
+plt.xticks(x, [f'{y}년' for y in years], fontsize=15)
+plt.xlabel('발생연도')
+plt.ylabel('발생횟수')
 plt.legend()
 plt.show()
 
 # --- 시각화 2: 산불 산점도 ---
-df_big_fire = df_fire[df_fire['피해면적'] >= 0].copy()
+df_big_fire = df_fire[ df_fire['피해면적'] <= 3500 ].copy()
 
 plt.figure(figsize=(10, 6))
 sns.scatterplot(data=df_big_fire, x='당시_임도길이', y='피해면적', hue='피해면적', size='피해면적', palette='flare', alpha=0.6, sizes=(200, 1000))
